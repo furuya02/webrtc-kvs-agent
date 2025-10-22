@@ -1,3 +1,16 @@
+🐹instructions.md
+🐹credential.md
+memo.md
+.claude
+
+node_modules/
+
+python-samples-for-amazon-kinesis-video-streams-with-webrtc
+
+# OS
+.DS_Store
+Thumbs.db
+
 # Logs
 logs
 *.log

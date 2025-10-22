@@ -1,0 +1,14 @@
+# WebRTC KVS Agent - Python Dependencies
+
+# AWS SDK
+boto3>=1.34.0
+
+# WebRTC implementation
+aiortc>=1.6.0
+websockets>=13.0.0
+
+# Media processing
+av>=10.0.0
+
+# GStreamer Python bindings
+PyGObject>=3.50.0
