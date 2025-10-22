@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 設定
-REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
+REGION = os.environ.get('AWS_REGION') or 'us-west-2'  # 空文字列の場合もデフォルト値を使用
 CHANNEL_NAME = 'webrtc-kvs-agent-channel'
 STREAM_NAME = 'webrtc-kvs-agent-stream'
 CLIENT_ID = f"viewer-{int(datetime.now().timestamp())}"

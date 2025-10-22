@@ -11,17 +11,34 @@ WebRTC ViewerとしてMasterから映像/音声を受信し、AWS Kinesis Video 
 WebRTC Master (Browser)
   → KVS WebRTC Signaling (webrtc-kvs-agent-channel)
   → WebRTC Viewer (Python/aiortc)
-  → GStreamer Pipeline (H.264 + AAC)
+  → GStreamer Pipeline (kvssink)
   → Kinesis Video Stream (webrtc-kvs-agent-stream)
 ```
+
+## 技術スタック
+
+- **言語**: Python 3.12
+- **WebRTC**: aiortc
+- **メディア処理**: GStreamer + kvssink plugin
+- **AWS SDK**: boto3
+- **インフラ**: AWS CDK (TypeScript)
+- **コンテナ**: Docker (Debian-based)
 
 ## プロジェクト構成
 
 ```
 webrtc-kvs-agent/
 ├── docker/              # メインアプリケーション（Python実装）
+│   ├── viewer.py       # Python WebRTC Viewer
+│   ├── requirements.txt # Python依存パッケージ
+│   └── Dockerfile      # Python 3.12 + Debian 12
 ├── KvsAgent/            # AWS CDK（Infrastructure as Code）
-├── WebRTC/              # WebRTC Master（ブラウザベースの参考実装）
+│   ├── bin/            # CDK app entry point
+│   ├── lib/            # CDK stack definitions
+│   └── cdk.json        # CDK configuration
+├── WebRTC/              # WebRTC Master（ブラウザベース）
+│   ├── app.js          # Master application logic
+│   └── index.html      # Web interface
 ├── CLAUDE.md            # 開発者向け詳細ドキュメント
 └── README.md            # このファイル
 ```
@@ -30,7 +47,6 @@ webrtc-kvs-agent/
 
 ### 前提条件
 
-- Python 3.9以上
 - Docker
 - AWS CLI
 - AWS CDK CLI (`npm install -g aws-cdk`)
@@ -38,7 +54,7 @@ webrtc-kvs-agent/
 
 ### 1. AWSインフラのデプロイ（CDK）
 
-AWS CDKを使用して、必要なすべてのインフラストラクチャ（VPC、ECS、ECR、KVS等）を自動作成します。
+AWS CDKを使用して、必要なすべてのインフラストラクチャを自動作成します。
 
 ```bash
 # CDKディレクトリに移動
@@ -47,16 +63,14 @@ cd KvsAgent
 # 依存関係のインストール（初回のみ）
 npm install
 
-# CDKのブートストラップ（初回のみ、リージョンごとに1回）
+# CDKブートストラップ（初回のみ）
 npx cdk bootstrap aws://ACCOUNT_ID/ap-northeast-1
 
 # スタックのデプロイ
 npx cdk deploy
-
-# デプロイ後の出力（ECR Repository URI等）をメモしておく
 ```
 
-CDKスタックにより以下のリソースが作成されます:
+**作成されるリソース:**
 - VPC（Public Subnet構成）
 - ECR Repository（`webrtc-agent-kvs-repo`）
 - ECS Cluster & Fargate Service
@@ -65,20 +79,74 @@ CDKスタックにより以下のリソースが作成されます:
 - KVS Signaling Channel（`webrtc-kvs-agent-channel`）
 - KVS Stream（`webrtc-kvs-agent-stream`）
 
-詳細な手順は [CLAUDE.md - AWS Infrastructure Deployment (CDK)](CLAUDE.md#aws-infrastructure-deployment-cdk) を参照してください。
-
-### 2. Dockerイメージのビルドとプッシュ
+### 2. Dockerイメージのビルド
 
 ```bash
-# ECRにログイン（リージョンとアカウントIDを適宜変更）
+cd docker
+docker build -t webrtc-kvs-agent .
+```
+
+**注意:** 初回ビルドは約10-20分かかります（KVS Producer SDKをソースからビルドするため）
+
+### 3. ローカルでの動作確認
+
+#### 3-1. AWS認証情報の設定
+
+```bash
+export AWS_ACCESS_KEY_ID="YOUR_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="YOUR_SECRET_ACCESS_KEY"
+export AWS_SESSION_TOKEN="YOUR_SESSION_TOKEN"  # オプション
+export AWS_REGION="us-west-2"
+```
+
+#### 3-2. WebRTC Masterを起動
+
+別のターミナルで:
+
+```bash
+cd WebRTC
+open index.html  # macOS
+
+# または簡易HTTPサーバーを起動
+python3 -m http.server 8080
+# ブラウザで http://localhost:8080 を開く
+```
+
+**ブラウザで設定:**
+1. AWS認証情報を入力
+2. Channel Name: `webrtc-kvs-agent-channel`
+3. Region: `us-west-2`
+4. Role: **Master**
+5. "Start"をクリック
+6. カメラとマイクへのアクセスを許可
+
+#### 3-3. Viewerを起動
+
+```bash
+docker run --rm \
+  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+  -e AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
+  -e AWS_REGION="$AWS_REGION" \
+  webrtc-kvs-agent
+```
+
+**期待される動作:**
+- WebSocket接続の確立
+- SDP Offer/Answer交換
+- ICE Connection State: `completed`
+- ビデオ/オーディオトラックの受信
+
+### 4. Fargateへのデプロイ
+
+```bash
+# ECRにログイン
 aws ecr get-login-password --region ap-northeast-1 | \
   docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com
 
-# Dockerイメージをビルド
+# イメージをビルドしてタグ付け
 cd docker
-docker build --platform linux/amd64 -t webrtc-agent-kvs-repo:latest .
-
-# イメージにタグ付け
+docker build -t webrtc-agent-kvs-repo:latest .
 docker tag webrtc-agent-kvs-repo:latest \
   ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com/webrtc-agent-kvs-repo:latest
 
@@ -88,101 +156,15 @@ docker push ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com/webrtc-agent-kvs-rep
 
 プッシュ後、Fargateサービスが自動的に新しいイメージをデプロイします。
 
-### 3. WebRTC Masterの起動（テスト用）
-
-別のターミナルで、ブラウザベースのMasterを起動します:
-
-```bash
-cd WebRTC
-
-# macOSの場合
-open index.html
-
-# または簡易HTTPサーバーを起動
-python3 -m http.server 8080
-# その後、ブラウザで http://localhost:8080 を開く
-```
-
-ブラウザで:
-1. AWS認証情報を入力（`🐹credential.md` 参照）
-2. "Master" ロールを選択
-3. "Start" ボタンをクリック
-4. カメラとマイクへのアクセスを許可
-
-### 4. 動作確認
-
-AWS ConsoleでKinesis Video Streamsにアクセスし、ストリームが送信されているか確認:
-- https://console.aws.amazon.com/kinesisvideo/home?region=ap-northeast-1#/streams
-
-CloudWatch Logsでエージェントのログを確認:
-- https://console.aws.amazon.com/cloudwatch/home?region=ap-northeast-1#logsV2:log-groups/log-group/$252Fecs$252Fwebrtc-kvs-agent
-
-## ローカル開発とデバッグ
-
-### Dockerコンテナでのローカルデバッグ
-
-ローカル環境でDockerを使用してデバッグする詳細な手順は、[docker/README.md](docker/README.md) を参照してください。
-
-**概要:**
-
-1. **AWS認証情報の準備**
-   ```bash
-   export AWS_ACCESS_KEY_ID="YOUR_ACCESS_KEY_ID"
-   export AWS_SECRET_ACCESS_KEY="YOUR_SECRET_ACCESS_KEY"
-   export AWS_SESSION_TOKEN="YOUR_SESSION_TOKEN"  # オプション
-   export AWS_REGION="us-west-2"
-   ```
-
-2. **ECRにログイン（KVSベースイメージ取得用）**
-   ```bash
-   aws ecr get-login-password --region us-west-2 | \
-     docker login --username AWS --password-stdin 546150905175.dkr.ecr.us-west-2.amazonaws.com
-   ```
-
-3. **Dockerイメージのビルド**
-   ```bash
-   cd docker
-   docker build -t webrtc-kvs-agent .
-   ```
-
-4. **Dockerコンテナの実行**
-   ```bash
-   docker run --rm \
-     -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-     -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-     -e AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
-     -e AWS_REGION="$AWS_REGION" \
-     webrtc-kvs-agent
-   ```
-
-詳細なデバッグ手順、ログの確認方法、トラブルシューティングは [docker/README.md](docker/README.md) を参照してください。
-
-### Pythonコードの直接実行（開発時）
-
-```bash
-cd docker
-
-# 依存関係のインストール
-pip3 install -r requirements.txt
-
-# 環境変数を設定して実行
-export AWS_ACCESS_KEY_ID="..."
-export AWS_SECRET_ACCESS_KEY="..."
-export AWS_SESSION_TOKEN="..."
-export AWS_REGION="us-west-2"
-
-python3 viewer.py
-```
-
 ## 設定
 
 ### 環境変数
 
 | 変数名 | 説明 | デフォルト | 必須 |
 |--------|------|-----------|------|
-| `AWS_REGION` | AWSリージョン | `us-west-2` | いいえ |
-| `AWS_ACCESS_KEY_ID` | AWSアクセスキー | - | ローカル実行時のみ |
-| `AWS_SECRET_ACCESS_KEY` | AWSシークレットキー | - | ローカル実行時のみ |
+| `AWS_REGION` | AWSリージョン | `ap-northeast-1` | いいえ |
+| `AWS_ACCESS_KEY_ID` | AWSアクセスキー | - | ローカルのみ |
+| `AWS_SECRET_ACCESS_KEY` | AWSシークレットキー | - | ローカルのみ |
 | `AWS_SESSION_TOKEN` | AWSセッショントークン | - | いいえ |
 
 **注意**: Fargate実行時は、IAMロールから認証情報が自動取得されるため、環境変数の設定は不要です。
@@ -194,42 +176,64 @@ python3 viewer.py
 - **Client ID**: 自動生成（`viewer-{timestamp}`）
 - **Codec**: H.264 (Video) + AAC (Audio)
 
-## ドキュメント
+## 開発状況
 
-- [CLAUDE.md](CLAUDE.md) - 開発者向け詳細ドキュメント（アーキテクチャ、トラブルシューティング等）
-- [docker/README.md](docker/README.md) - Dockerローカルデバッグ詳細手順
-- [KvsAgent/README.md](KvsAgent/README.md) - CDK使用方法
+### ✅ 完成済み
+
+- Python 3.12 + Debian環境への移行
+- AWS CDKによるインフラ自動構築
+- KVS Signaling Channelへの接続（AWS SigV4署名対応）
+- WebRTC P2P接続確立（aiortc）
+- ビデオ/オーディオメディアストリーム受信
+- Dockerイメージのビルド
+
+### 🔄 開発中
+
+- **KVS Streamへのメディア転送**（最優先）
+- GStreamerパイプラインの統合
+- エラーハンドリングと自動再接続
+- Fargateでの運用確認
 
 ## トラブルシューティング
 
-### ResourceNotFoundException
-**原因**: KVS Signaling ChannelまたはStreamが存在しない
+### Dockerビルドエラー
 
-**解決策**: CDKスタックをデプロイしてください（上記「1. AWSインフラのデプロイ（CDK）」参照）
+**問題:** パッケージのインストールに失敗する
 
-### AccessDeniedException
-**原因**: IAM権限が不足している
-
-**解決策**:
-- ローカル開発時: 環境変数に正しい認証情報が設定されているか確認
-- Fargate実行時: CDKスタックで自動作成されたIAMロールを確認
-
-### Docker build fails with dependency errors
-**原因**: Python依存パッケージのビルドエラー
-
-**解決策**:
-- ベースイメージにビルドツールがインストールされていることを確認
-- Dockerfileで必要な開発パッケージ（gcc, python3-devel等）がインストールされています
+**解決策:**
+```bash
+# ビルドキャッシュをクリア
+docker build --no-cache -t webrtc-kvs-agent .
+```
 
 ### WebRTC接続が確立しない
-**原因**: Signaling Channelまたは認証情報の問題
 
-**解決策**:
-1. CDKスタックが正しくデプロイされているか確認
-2. WebRTC Masterが起動しているか確認
-3. CloudWatch Logsでエージェントのログを確認
+**原因:** KVS Signaling Channelまたは認証情報の問題
 
-詳細なトラブルシューティングは [CLAUDE.md - Troubleshooting](CLAUDE.md#troubleshooting) を参照してください。
+**解決策:**
+1. KVS Signaling Channelの存在確認:
+   ```bash
+   aws kinesisvideo list-signaling-channels --region us-west-2
+   ```
+2. AWS認証情報の確認:
+   ```bash
+   aws sts get-caller-identity --region us-west-2
+   ```
+3. WebRTC Masterが起動しているか確認
+
+### AccessDeniedException
+
+**原因:** IAM権限不足
+
+**解決策:**
+- **ローカル:** 環境変数に正しい認証情報を設定
+- **Fargate:** CDKスタックで作成されたIAMロールを確認
+
+## ドキュメント
+
+- [CLAUDE.md](CLAUDE.md) - 開発者向け詳細ドキュメント（アーキテクチャ、実装詳細、トラブルシューティング等）
+- [docker/README.md](docker/README.md) - Dockerローカルデバッグ詳細手順（予定）
+- [KvsAgent/README.md](KvsAgent/README.md) - CDK使用方法（予定）
 
 ## セキュリティ
 
@@ -237,51 +241,13 @@ python3 viewer.py
 - **IAMロールを使用**: Fargate/ECSデプロイ時はハードコード認証情報を避ける
 - **即座にローテーション**: 認証情報が漏洩した場合は直ちにローテーション
 
-## 実装状況（2025-10-23更新）
-
-### ✅ 完成済み
-- AWS CDKによるインフラ自動構築（VPC、ECS、ECR、KVS等）
-- KVS Signaling Channelへの接続（AWS SigV4署名対応）
-- ICE Server設定の取得
-- Docker化とFargateデプロイ対応
-- 認証情報管理（環境変数/IAMロール）
-- **WebRTC P2P接続確立**（Python + aiortc）
-- **ビデオ/オーディオストリーム受信**
-
-### 🔄 開発中（次のステップ）
-- **KVS Streamへのメディア転送**（最優先）
-- GStreamerブリッジの完全統合（WebRTC → GStreamer → KVS）
-- エラーハンドリングと自動再接続
-
-### 技術スタック
-
-**Python + aiortc実装**（Node.js + wrtcから移行完了）
-
-**アーキテクチャ**:
-```
-WebRTC Master (Browser)
-  ↓ KVS WebRTC Signaling (AWS SigV4)
-Python Viewer (aiortc) ✅ 接続成功
-  ↓ メディアトラック受信 ✅ 動作確認済み
-GStreamer (kvssink) ⏳ 実装中
-  ↓
-Kinesis Video Stream
-```
-
-**採用理由**:
-- ✅ ネイティブビルド不要（aiortcはピュアPython）
-- ✅ シンプルで保守しやすいコード
-- ✅ AWS SDKとの統合が容易
-- ✅ デバッグが簡単
-
-詳細は [CLAUDE.md - Current Implementation Status](CLAUDE.md#current-implementation-status) を参照してください。
-
-## ライセンス
-
-このプロジェクトは内部開発用です。
-
 ## 参考リンク
 
 - [AWS Kinesis Video Streams WebRTC](https://docs.aws.amazon.com/kinesisvideostreams/latest/dg/webrtc.html)
 - [GStreamer kvssink Plugin](https://docs.aws.amazon.com/kinesisvideostreams/latest/dg/examples-gstreamer-plugin.html)
+- [aiortc Documentation](https://aiortc.readthedocs.io/)
 - [AWS CDK](https://docs.aws.amazon.com/cdk/latest/guide/home.html)
+
+## ライセンス
+
+このプロジェクトは内部開発用です。

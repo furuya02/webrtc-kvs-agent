@@ -1,14 +1,20 @@
 # WebRTC KVS Agent - Python Dependencies
 
-# AWS SDK
-boto3>=1.34.0
+# AWS SDK (最新安定版)
+boto3>=1.35.0
 
-# WebRTC implementation
+# WebRTC implementation (安定版)
 aiortc>=1.6.0
-websockets>=13.0.0
+websockets>=13.0
 
-# Media processing
-av>=10.0.0
+# Media processing (最新安定版)
+av>=11.0.0
 
 # GStreamer Python bindings
-PyGObject>=3.50.0
+# PyGObject/pycairo - システムパッケージ(python3-gi, python3-gi-cairo)を使用
+# Python 3.11との互換性のため、pipではインストールしない
+
+# Additional dependencies
+numpy>=1.26.0
+aiohttp>=3.9.0
+cffi>=1.16.0
